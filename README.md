@@ -40,8 +40,7 @@ A full-stack clipboard manager application that tracks everything you copy and p
 ### Prerequisites
 
 - **Node.js** 18+ and npm
-- **Docker** and Docker Compose (for PostgreSQL)
-- Or PostgreSQL 14+ installed locally
+- That's it! No database required for local use
 
 ### Installation
 
@@ -51,31 +50,45 @@ A full-stack clipboard manager application that tracks everything you copy and p
    cd clipboard-manager
    ```
 
-2. **Start PostgreSQL database**
-   ```bash
-   docker-compose up -d
-   ```
-
-3. **Install dependencies**
+2. **Install dependencies**
    ```bash
    npm run setup
    ```
 
-4. **Set up the database**
-   ```bash
-   cd backend
-   npm run db:push
-   cd ..
-   ```
-
-5. **Start the application**
+3. **Start the application**
    ```bash
    npm run dev
    ```
 
-6. **Open your browser**
+4. **Open your browser**
    - Frontend: http://localhost:5173
    - Backend API: http://localhost:3001
+
+Your clipboard history is automatically saved to `backend/data/clipboard-data.json`
+
+### Optional: Using DynamoDB (AWS Cloud Storage)
+
+If you want to use AWS DynamoDB instead of local JSON storage:
+
+1. **Set up DynamoDB table**
+   ```bash
+   cd backend
+   npm run setup:dynamodb
+   ```
+
+2. **Configure environment**
+   ```bash
+   # backend/.env
+   STORAGE_TYPE=dynamodb
+   DYNAMODB_TABLE_NAME=ClipboardEntries
+   AWS_REGION=us-east-1
+   AWS_ACCESS_KEY_ID=your-access-key
+   AWS_SECRET_ACCESS_KEY=your-secret-key
+   ```
+
+3. **Restart the backend**
+
+See [STORAGE_GUIDE.md](./STORAGE_GUIDE.md) for detailed storage configuration options.
 
 ## 📖 Usage
 
@@ -108,10 +121,18 @@ A full-stack clipboard manager application that tracks everything you copy and p
 ```
 clipboard-manager/
 ├── backend/                 # Express API server
-│   ├── prisma/
-│   │   └── schema.prisma   # Database schema
 │   ├── src/
+│   │   ├── storage/        # Storage abstraction layer
+│   │   │   ├── StorageProvider.ts      # Interface
+│   │   │   ├── JsonFileStorage.ts      # Local JSON storage
+│   │   │   ├── DynamoDBStorage.ts      # AWS DynamoDB storage
+│   │   │   ├── StorageFactory.ts       # Factory pattern
+│   │   │   └── SyncService.ts          # JSON ↔ DynamoDB sync
+│   │   ├── scripts/
+│   │   │   └── setup-dynamodb.ts       # DynamoDB table setup
 │   │   └── index.ts        # API endpoints
+│   ├── data/               # Local JSON storage (auto-created)
+│   │   └── clipboard-data.json
 │   ├── package.json
 │   └── tsconfig.json
 ├── frontend/                # React application
@@ -122,7 +143,8 @@ clipboard-manager/
 │   │   └── index.css       # Global styles
 │   ├── package.json
 │   └── vite.config.ts      # Vite + PWA config
-├── docker-compose.yml       # PostgreSQL setup
+├── docker-compose.full.yml  # Full-stack Docker setup
+├── STORAGE_GUIDE.md         # Storage configuration guide
 └── package.json            # Root scripts
 ```
 
@@ -137,9 +159,7 @@ clipboard-manager/
 - `npm run dev` - Start API server with auto-reload
 - `npm run build` - Build TypeScript to JavaScript
 - `npm start` - Run production server
-- `npm run db:push` - Push schema changes to database
-- `npm run db:studio` - Open Prisma Studio (database GUI)
-- `npm run db:migrate` - Create and run migrations
+- `npm run setup:dynamodb` - Create DynamoDB table (if using AWS)
 
 #### Frontend (`cd frontend`)
 - `npm run dev` - Start Vite dev server
@@ -149,11 +169,39 @@ clipboard-manager/
 ### Environment Variables
 
 #### Backend (`.env`)
+
+**For JSON File Storage (Default):**
 ```bash
-DATABASE_URL="postgresql://clipboarduser:clipboardpass@localhost:5432/clipboard_manager?schema=public"
+STORAGE_TYPE=json
+DATA_DIR=./data
 PORT=3001
 NODE_ENV=development
 CORS_ORIGIN=http://localhost:5173
+```
+
+**For DynamoDB Storage (AWS):**
+```bash
+STORAGE_TYPE=dynamodb
+DYNAMODB_TABLE_NAME=ClipboardEntries
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+PORT=3001
+NODE_ENV=production
+CORS_ORIGIN=https://your-domain.com
+```
+
+**For Hybrid (JSON + DynamoDB Sync):**
+```bash
+# Keep using JSON locally
+STORAGE_TYPE=json
+DATA_DIR=./data
+
+# Add AWS credentials for sync API
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+DYNAMODB_TABLE_NAME=ClipboardEntries
 ```
 
 #### Frontend (`.env`)
@@ -161,43 +209,81 @@ CORS_ORIGIN=http://localhost:5173
 VITE_API_URL=  # Leave empty for development proxy
 ```
 
-## 🗄️ Database Schema
+## 💾 Data Model
 
-```prisma
-model ClipboardEntry {
-  id        String   @id @default(cuid())
-  content   String   @db.Text
-  createdAt DateTime @default(now())
-  userId    String?  // For future multi-user support
-  device    String?  // Mobile or Desktop
+Clipboard entries use the same structure across all storage types:
+
+```typescript
+interface ClipboardEntry {
+  id: string;              // Unique identifier (cuid-like)
+  content: string;         // The clipboard text content
+  createdAt: string;       // ISO timestamp
+  userId?: string | null;  // Optional: for multi-user support
+  device?: string | null;  // "Mobile" or "Desktop"
 }
 ```
+
+**JSON File Storage:** Stored as an array in `data/clipboard-data.json`
+```json
+{
+  "entries": [
+    {
+      "id": "clxyz123abc",
+      "content": "Hello World",
+      "createdAt": "2026-01-11T10:30:00.000Z",
+      "device": "Desktop"
+    }
+  ]
+}
+```
+
+**DynamoDB Storage:** Each entry is a separate item in the table
+- Partition Key: `id` (String)
+- No secondary indexes needed (uses Scan for queries)
 
 ## 🌐 API Endpoints
 
 ### GET `/api/health`
 Health check endpoint
+- Returns: `{ status: "ok", timestamp: string, storage: "json" | "dynamodb" }`
 
 ### GET `/api/clipboard`
 Get all clipboard entries (with pagination)
 - Query params: `limit`, `offset`
+- Returns: `{ entries: ClipboardEntry[], total: number, limit: number, offset: number }`
 
 ### GET `/api/clipboard/:id`
 Get a single entry by ID
+- Returns: `ClipboardEntry` or 404
 
 ### POST `/api/clipboard`
 Create a new clipboard entry
 - Body: `{ content: string, device?: string }`
+- Returns: `ClipboardEntry`
 
 ### DELETE `/api/clipboard/:id`
 Delete a single entry
+- Returns: `{ message: "Entry deleted successfully" }`
 
 ### DELETE `/api/clipboard`
 Clear all entries
+- Returns: `{ message: "All entries deleted successfully" }`
 
 ### GET `/api/clipboard/search/:query`
 Search entries by content
 - Query params: `limit`
+- Returns: `ClipboardEntry[]`
+
+### POST `/api/sync` 🆕
+Sync between JSON and DynamoDB storage
+- Body: `{ direction: "upload" | "download" | "bidirectional" }`
+- Requires AWS credentials configured
+- Returns: `{ success: true, uploaded?: number, downloaded?: number, skipped?: number }`
+
+**Sync Directions:**
+- `upload` - Local JSON → DynamoDB
+- `download` - DynamoDB → Local JSON
+- `bidirectional` - Merge both ways (most recent wins)
 
 ## 📱 Progressive Web App (PWA)
 
@@ -210,24 +296,9 @@ The application is PWA-enabled, meaning:
 
 ## 🐳 Docker Deployment
 
-### Database Only (Development)
+### Full-Stack Deployment (Frontend + Backend)
 
-The included `docker-compose.yml` provides an easy PostgreSQL setup:
-
-```bash
-# Start database
-docker-compose up -d
-
-# Stop database
-docker-compose down
-
-# Stop and remove all data
-docker-compose down -v
-```
-
-### Full-Stack Docker Deployment
-
-For a complete containerized deployment (database + backend + frontend):
+Deploy the entire application in containers with persistent JSON storage:
 
 ```bash
 # Build and start all services
@@ -239,19 +310,46 @@ docker-compose -f docker-compose.full.yml logs -f
 # Stop all services
 docker-compose -f docker-compose.full.yml down
 
-# Stop and remove all data
+# Stop and remove all data (including clipboard history)
 docker-compose -f docker-compose.full.yml down -v
 ```
 
-After starting, access the application at:
+**What's included:**
+- ✅ Backend API (Node.js + Express)
+- ✅ Frontend (React + Nginx)
+- ✅ Persistent JSON storage (Docker volume)
+- ✅ Health checks for all services
+- ✅ Automatic restarts
+
+**Access the application:**
 - **Frontend**: http://localhost:3000
 - **Backend API**: http://localhost:3001
-- **Database**: localhost:5432
+
+**Data persistence:**
+- Clipboard history stored in Docker volume `clipboard-data`
+- Data survives container restarts
+- Located at `/app/data/clipboard-data.json` inside container
+
+### Docker with DynamoDB
+
+To use DynamoDB instead of JSON storage in Docker:
+
+```bash
+# Edit docker-compose.full.yml
+# Change environment variables in backend service:
+environment:
+  STORAGE_TYPE: dynamodb
+  DYNAMODB_TABLE_NAME: ClipboardEntries
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: your-key
+  AWS_SECRET_ACCESS_KEY: your-secret
+```
 
 This is ideal for:
-- Quick testing without installing Node.js
-- Consistent environment across different machines
-- Easy deployment to container orchestration platforms
+- ✅ Quick testing without installing Node.js
+- ✅ Consistent environment across different machines
+- ✅ Easy deployment to container platforms
+- ✅ Zero database setup required
 
 ## 🚀 Deployment Instructions
 
@@ -269,37 +367,12 @@ npm run setup
 npm run build
 ```
 
-#### 2. Set up PostgreSQL
-
-**Option A: Using Docker (Recommended)**
-```bash
-docker-compose up -d
-```
-
-**Option B: Local PostgreSQL Installation**
-```bash
-# Install PostgreSQL 14+ on your system
-# macOS
-brew install postgresql@16
-brew services start postgresql@16
-
-# Ubuntu/Debian
-sudo apt install postgresql-16
-sudo systemctl start postgresql
-
-# Create database and user
-psql postgres
-CREATE DATABASE clipboard_manager;
-CREATE USER clipboarduser WITH PASSWORD 'clipboardpass';
-GRANT ALL PRIVILEGES ON DATABASE clipboard_manager TO clipboarduser;
-\q
-```
-
-#### 3. Configure Environment
+#### 2. Configure Environment
 
 Create `backend/.env`:
 ```bash
-DATABASE_URL="postgresql://clipboarduser:clipboardpass@localhost:5432/clipboard_manager?schema=public"
+STORAGE_TYPE=json
+DATA_DIR=./data
 PORT=3001
 NODE_ENV=production
 CORS_ORIGIN=http://localhost:4173
@@ -310,15 +383,7 @@ Create `frontend/.env`:
 VITE_API_URL=http://localhost:3001/api
 ```
 
-#### 4. Initialize Database
-
-```bash
-cd backend
-npm run db:push
-cd ..
-```
-
-#### 5. Run Production Server
+#### 3. Run Production Server
 
 **Option A: Using PM2 (Recommended for background processes)**
 ```bash
@@ -384,8 +449,8 @@ start "Frontend" cmd /k npx serve -s dist -l 4173
 
 Deploy the clipboard manager to AWS with the following setup:
 - **Frontend**: S3 + CloudFront (CDN)
-- **Backend**: EC2 or ECS (Fargate)
-- **Database**: RDS PostgreSQL
+- **Backend**: EC2 or Lambda
+- **Storage**: DynamoDB (serverless NoSQL)
 
 #### Prerequisites
 
@@ -393,37 +458,37 @@ Deploy the clipboard manager to AWS with the following setup:
 - AWS account with appropriate permissions
 - Domain name (optional, but recommended for HTTPS)
 
+**💰 Estimated Cost:** ~$1-3/month (vs ~$24-35/month with RDS)
+
 ---
 
-### Option 1: EC2 + RDS Deployment (Simpler)
+### Option 1: EC2 + DynamoDB Deployment (Simplest)
 
-#### Step 1: Create RDS PostgreSQL Database
+#### Step 1: Create DynamoDB Table
 
 ```bash
-# Using AWS CLI
-aws rds create-db-instance \
-  --db-instance-identifier clipboard-manager-db \
-  --db-instance-class db.t3.micro \
-  --engine postgres \
-  --engine-version 16.1 \
-  --master-username clipboardadmin \
-  --master-user-password YOUR_SECURE_PASSWORD \
-  --allocated-storage 20 \
-  --vpc-security-group-ids sg-xxxxx \
-  --db-name clipboard_manager \
-  --publicly-accessible \
-  --backup-retention-period 7
+# Using AWS CLI (On-Demand billing - recommended)
+aws dynamodb create-table \
+  --table-name ClipboardEntries \
+  --attribute-definitions AttributeName=id,AttributeType=S \
+  --key-schema AttributeName=id,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region us-east-1 \
+  --tags Key=Application,Value=ClipboardManager
 
 # Or use AWS Console:
-# 1. Go to RDS Console
-# 2. Create Database → PostgreSQL
-# 3. Choose Free Tier (db.t3.micro)
-# 4. Set master username/password
-# 5. Create database name: clipboard_manager
-# 6. Configure security group to allow port 5432
-```
+# 1. Go to DynamoDB Console
+# 2. Create Table
+# 3. Table name: ClipboardEntries
+# 4. Partition key: id (String)
+# 5. Billing mode: On-Demand
+# 6. Create table
 
-**Note the RDS endpoint** (e.g., `clipboard-manager-db.xxxxx.us-east-1.rds.amazonaws.com`)
+# Or use the setup script from your backend:
+cd backend
+npm install
+npm run setup:dynamodb -- --on-demand
+```
 
 #### Step 2: Launch EC2 Instance
 
@@ -481,7 +546,9 @@ npm run setup
 
 # Configure backend environment
 cat > backend/.env << EOF
-DATABASE_URL="postgresql://clipboardadmin:YOUR_SECURE_PASSWORD@your-rds-endpoint.rds.amazonaws.com:5432/clipboard_manager?schema=public"
+STORAGE_TYPE=dynamodb
+DYNAMODB_TABLE_NAME=ClipboardEntries
+AWS_REGION=us-east-1
 PORT=3001
 NODE_ENV=production
 CORS_ORIGIN=https://your-domain.com
@@ -491,16 +558,39 @@ EOF
 cd backend
 npm run build
 
-# Initialize database
-npm run db:push
-
 # Start backend with PM2
+# Note: EC2 instance should have IAM role with DynamoDB permissions
+# Or you can set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env
 pm2 start dist/index.js --name clipboard-backend
 pm2 startup
 pm2 save
 
 # Check logs
 pm2 logs clipboard-backend
+```
+
+**IAM Permissions for EC2:**
+
+Attach an IAM role to your EC2 instance with this policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:GetItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Scan",
+        "dynamodb:Query",
+        "dynamodb:BatchWriteItem"
+      ],
+      "Resource": "arn:aws:dynamodb:us-east-1:*:table/ClipboardEntries"
+    }
+  ]
+}
 ```
 
 #### Step 5: Set Up Nginx as Reverse Proxy (Optional but Recommended)
@@ -620,41 +710,17 @@ pm2 restart clipboard-backend
 
 ---
 
-### Option 2: ECS Fargate + RDS Deployment (More Scalable)
+### Option 2: ECS Fargate + DynamoDB Deployment (More Scalable)
 
-#### Step 1: Create RDS Database (Same as Option 1)
+#### Step 1: Create DynamoDB Table (Same as Option 1)
 
-#### Step 2: Create Docker Images
+Use the DynamoDB setup from Option 1, Step 1.
 
-Create `backend/Dockerfile`:
-```dockerfile
-FROM node:18-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-RUN npx prisma generate
+#### Step 2: Build and Push Docker Image to ECR
 
-FROM node:18-alpine
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/prisma ./prisma
-EXPOSE 3001
-CMD ["npm", "start"]
-```
+The `backend/Dockerfile` is already included in the repository.
 
-Create `backend/.dockerignore`:
-```
-node_modules
-dist
-.env
-*.log
-```
-
-#### Step 3: Build and Push to ECR
+Build and push to ECR:
 
 ```bash
 # Create ECR repository
@@ -710,35 +776,46 @@ Using AWS Console:
 
 ### 📊 Cost Estimation (AWS)
 
-**Option 1: EC2 + RDS**
+**Option 1: EC2 + DynamoDB** ⭐ Most Cost-Effective
 - EC2 t3.micro: ~$8-10/month (or free tier)
-- RDS db.t3.micro: ~$15-20/month (or free tier)
-- S3 + CloudFront: ~$1-5/month (depending on traffic)
-- **Total: ~$24-35/month** (or ~$1-5/month on free tier)
+- DynamoDB On-Demand: ~$0.25-1/month (typical personal use)
+- S3 + CloudFront: ~$1-2/month (depending on traffic)
+- **Total: ~$9-13/month** (or ~$1-3/month on free tier)
 
-**Option 2: ECS Fargate + RDS**
+**Option 2: ECS Fargate + DynamoDB**
 - Fargate (0.25 vCPU, 512 MB): ~$12/month
-- RDS db.t3.micro: ~$15-20/month
-- S3 + CloudFront: ~$1-5/month
+- DynamoDB On-Demand: ~$0.25-1/month
+- S3 + CloudFront: ~$1-2/month
 - ALB: ~$18/month
-- **Total: ~$46-55/month**
+- **Total: ~$31-33/month**
+
+**💰 Savings vs PostgreSQL RDS:**
+- Option 1: Save ~$15-22/month (60-65% cheaper)
+- Option 2: Save ~$13-22/month (40% cheaper)
+
+**DynamoDB Pricing Details:**
+- First 25 GB storage: Free
+- On-Demand: $1.25 per million writes, $0.25 per million reads
+- For 1,000 clipboard entries/month: ~$0.01-0.05/month
+- Backup: Point-in-time recovery adds ~$0.20/month per GB
 
 ---
 
 ### 🔍 Post-Deployment Checklist
 
-- [ ] Database backups configured (RDS automated backups)
+- [ ] DynamoDB table created with On-Demand billing
+- [ ] IAM roles/permissions configured for DynamoDB access
 - [ ] SSL/HTTPS enabled for all endpoints
 - [ ] Environment variables secured (never commit `.env`)
-- [ ] Monitoring set up (CloudWatch, EC2/ECS metrics)
+- [ ] Monitoring set up (CloudWatch, EC2/ECS metrics, DynamoDB metrics)
 - [ ] Log aggregation configured (CloudWatch Logs)
 - [ ] Security groups properly configured (least privilege)
 - [ ] CORS settings updated for production domain
 - [ ] Rate limiting implemented (consider AWS WAF)
-- [ ] Database connection pooling configured
 - [ ] Auto-scaling configured (for ECS option)
-- [ ] Backup and disaster recovery plan documented
+- [ ] DynamoDB backup enabled (Point-in-time recovery)
 - [ ] Domain DNS configured (Route 53 or your provider)
+- [ ] Test sync functionality if using hybrid approach
 
 ## 🔒 Security Notes
 
@@ -749,10 +826,12 @@ Using AWS Console:
 - For AWS deployments:
   - Use AWS Secrets Manager for sensitive credentials
   - Enable AWS WAF for DDoS protection
-  - Use VPC with private subnets for RDS
-  - Enable RDS encryption at rest
+  - Use IAM roles instead of access keys when possible
+  - Enable DynamoDB encryption at rest (enabled by default)
+  - Enable Point-in-time Recovery for DynamoDB
   - Regularly update dependencies and security patches
   - Implement AWS CloudTrail for audit logging
+  - Use VPC endpoints for DynamoDB (more secure, lower cost)
 
 ## 🚧 Future Enhancements
 
