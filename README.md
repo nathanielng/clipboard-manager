@@ -1,25 +1,32 @@
 # 📋 Clipboard Manager
 
-A full-stack clipboard manager application that tracks everything you copy and paste with timestamps. Works seamlessly on both mobile phones and desktop browsers with a PostgreSQL backend for persistent storage.
+A full-stack clipboard manager application that tracks everything you copy and paste with timestamps. Works seamlessly on both mobile phones and desktop browsers with flexible storage options: **JSON file for local deployment** and **DynamoDB for AWS cloud deployment**.
 
 ## ✨ Features
 
 - 📝 **Copy/Paste Tracking** - Save any text content with a single click
 - ⏰ **Automatic Timestamps** - Every entry is timestamped when created
 - 📱 **Cross-Platform** - Works on mobile and desktop browsers (Progressive Web App)
-- 💾 **Persistent Storage** - All clipboard history saved in PostgreSQL database
+- 💾 **Flexible Storage** - JSON file (local) or DynamoDB (AWS cloud)
+- 🔄 **Sync Functionality** - Optional sync between local JSON and DynamoDB
 - 🔍 **Search Functionality** - Quickly find content in your clipboard history
 - 🎨 **Modern UI** - Clean, responsive design that works everywhere
 - 📊 **Device Tracking** - See which device each entry came from
 - 🗑️ **Easy Management** - Delete individual entries or clear entire history
+- ⚡ **Lightweight** - No heavy database required for local use
 
 ## 🏗️ Tech Stack
 
 ### Backend
 - **Node.js** + **Express** - REST API server
-- **PostgreSQL** - Database for clipboard history
-- **Prisma ORM** - Type-safe database access
+- **AWS SDK** - DynamoDB integration (optional)
 - **TypeScript** - Type safety and better DX
+- **Storage Abstraction** - Pluggable storage providers
+
+### Storage Options
+- **JSON File** - Simple, lightweight local storage (default)
+- **Amazon DynamoDB** - Serverless NoSQL for cloud deployment
+- **Sync API** - Bi-directional sync between storage types
 
 ### Frontend
 - **React 18** - UI framework

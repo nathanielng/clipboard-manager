@@ -1,30 +1,10 @@
 version: '3.8'
 
 # Full-stack Docker Compose configuration
-# This runs the entire application (frontend, backend, database) in containers
+# This runs the entire application (frontend + backend) in containers
+# Data is stored in a JSON file (persisted in a Docker volume)
 
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:16-alpine
-    container_name: clipboard-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: clipboarduser
-      POSTGRES_PASSWORD: clipboardpass
-      POSTGRES_DB: clipboard_manager
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clipboarduser -d clipboard_manager"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - clipboard-network
-
   # Backend API
   backend:
     build:
@@ -33,15 +13,15 @@ services:
     container_name: clipboard-backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: "postgresql://clipboarduser:clipboardpass@postgres:5432/clipboard_manager?schema=public"
+      STORAGE_TYPE: json
+      DATA_DIR: /app/data
       PORT: 3001
       NODE_ENV: production
       CORS_ORIGIN: "http://localhost:3000"
     ports:
       - "3001:3001"
-    depends_on:
-      postgres:
-        condition: service_healthy
+    volumes:
+      - clipboard-data:/app/data
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
       interval: 30s
@@ -75,7 +55,7 @@ services:
       - clipboard-network
 
 volumes:
-  postgres-data:
+  clipboard-data:
     driver: local
 
 networks:
